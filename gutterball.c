@@ -46,6 +46,7 @@ static void buf_patch32(Buf *b, size_t off, int32_t v) { memcpy(b->data+off, &v,
  * ══════════════════════════════════════════════════════════*/
 typedef enum {
     TT_INT,TT_FLOAT,TT_STRING,TT_CHAR,TT_IDENT,
+    TT_IMPORT,
     TT_FN,TT_VAR,TT_CONST,TT_RETURN,TT_IF,TT_ELSE,
     TT_WHILE,TT_FOR,TT_IN,TT_LOOP,TT_BREAK,TT_CONTINUE,
     TT_TRUE,TT_FALSE,TT_NULL,TT_STRUCT,TT_CAST,
@@ -120,9 +121,29 @@ static void lex(Lexer *L) {
         }
         if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='_'){
             char buf[256]; int bi=0;
+            /* c = lp(L,0) is a peek — NOT yet consumed. Read from current pos. */
             while((lp(L,0)>='a'&&lp(L,0)<='z')||(lp(L,0)>='A'&&lp(L,0)<='Z')||(lp(L,0)>='0'&&lp(L,0)<='9')||lp(L,0)=='_')
                 buf[bi++]=la(L);
             buf[bi]=0;
+            /* check for get-Library/name import */
+            if(!strcmp(buf,"get")&&lp(L,0)=='-'){
+                /* peek ahead for "Library/" */
+                const char*libkw="-Library/";int match=1;
+                for(int ki=0;libkw[ki]&&match;ki++){
+                    if(lp(L,ki)!=libkw[ki])match=0;
+                }
+                if(match){
+                    /* consume "-Library/" */
+                    for(int ki=0;libkw[ki];ki++)la(L);
+                    /* read library name */
+                    char libname[128];int li=0;
+                    while((lp(L,0)>='a'&&lp(L,0)<='z')||(lp(L,0)>='A'&&lp(L,0)<='Z')||
+                          (lp(L,0)>='0'&&lp(L,0)<='9')||lp(L,0)=='_')
+                        libname[li++]=la(L);
+                    libname[li]=0;
+                    ltok(L,TT_IMPORT,xstrdup(libname),0,0);continue;
+                }
+            }
             TokType tt=TT_IDENT;
             for(int i=0;KW[i].kw;i++)if(!strcmp(buf,KW[i].kw)){tt=KW[i].tt;break;}
             ltok(L,tt,tt==TT_IDENT?xstrdup(buf):NULL,0,0); continue;
@@ -175,6 +196,7 @@ typedef enum {
     ND_INT,ND_FLOAT,ND_STR,ND_BOOL,ND_CHAR,ND_NULL,
     ND_IDENT,ND_BINOP,ND_UNARY,ND_CAST,
     ND_CALL,ND_EXEC_CALL,ND_INDEX,ND_FIELD,ND_ADDROF,ND_DEREF,
+    ND_IMPORT,
     ND_VARDECL,ND_CONSTDECL,ND_ASSIGN,
     ND_RETURN,ND_IF,ND_WHILE,ND_FOR,ND_LOOP,ND_BREAK,ND_CONTINUE,
     ND_EXPRSTMT,ND_BLOCK,ND_FNDEF,ND_PARAM,ND_STRUCT_DEF,ND_PROGRAM
@@ -238,6 +260,26 @@ static Node *parse_primary(Parser*P){
     }
     if(t->type==TT_IDENT){
         pa(P);
+        /* namespace.function(...) call */
+        if(pc(P,TT_DOT)&&P->pos+1<P->pos+100){
+            size_t saved=P->pos;
+            pa(P); /* consume dot */
+            if(pc(P,TT_IDENT)){
+                Token*meth=pa(P);
+                if(pm(P,TT_LPAREN)){
+                    /* namespace.method call: combine as "ns.method" */
+                    char fullname[128];
+                    snprintf(fullname,sizeof(fullname),"%s.%s",t->sval,meth->sval);
+                    Node*n=nn(ND_CALL,t->line);n->sval=xstrdup(fullname);
+                    while(!pc(P,TT_RPAREN)&&!pc(P,TT_EOF)){nadd(n,parse_expr(P));if(!pm(P,TT_COMMA))break;}
+                    pe(P,TT_RPAREN,")");return n;
+                }
+                /* namespace.field access — treat as field access */
+                P->pos=saved;
+            } else {
+                P->pos=saved;
+            }
+        }
         if(pm(P,TT_LPAREN)){
             Node*n=nn(ND_CALL,t->line);n->sval=xstrdup(t->sval);
             while(!pc(P,TT_RPAREN)&&!pc(P,TT_EOF)){nadd(n,parse_expr(P));if(!pm(P,TT_COMMA))break;}
@@ -369,10 +411,32 @@ static Node *parse_fn(Parser*P){
     pe(P,TT_RPAREN,")");pe(P,TT_ARROW,"->");fn->type_hint=parse_type(P);
     nadd(fn,parse_block(P));return fn;
 }
+
+/* Rename all ND_CALL nodes inside a node tree: if call name matches a lib fn, prefix it */
+static void prefix_calls(Node*n, const char*libname, char(*libfns)[64], int nfns){
+    if(!n)return;
+    if(n->kind==ND_CALL&&n->sval){
+        /* check if this call matches one of the lib's function names */
+        for(int i=0;i<nfns;i++){
+            if(!strcmp(n->sval,libfns[i])){
+                char newname[200];
+                snprintf(newname,sizeof(newname),"%s.%s",libname,n->sval);
+                free(n->sval);n->sval=xstrdup(newname);
+                break;
+            }
+        }
+    }
+    for(int i=0;i<n->nch;i++) prefix_calls(n->ch[i],libname,libfns,nfns);
+}
 static Node *parse_program(Parser*P){
     Node*prog=nn(ND_PROGRAM,0);
     while(!pc(P,TT_EOF)){
-        if(pc(P,TT_STRUCT)){
+        if(pc(P,TT_IMPORT)){
+            /* get-Library/name — record import, resolved later */
+            Token*t=pa(P);
+            Node*n=nn(ND_IMPORT,t->line);n->sval=xstrdup(t->sval);
+            nadd(prog,n);
+        } else if(pc(P,TT_STRUCT)){
             Token*t=pe(P,TT_STRUCT,"struct");Token*sn=pe(P,TT_IDENT,"struct name");
             Node*s=nn(ND_STRUCT_DEF,t->line);s->sval=xstrdup(sn->sval);
             pe(P,TT_LBRACE,"{");
@@ -1702,8 +1766,71 @@ static void banner(void){
     printf("  v3 — Raw x86-64 | Verified | No deps\033[0m\n\n");
 }
 
+
+/* ── Baked-in standard library sources ── */
+static const char *BAKED_LIBS[][2] = {
+    {"io",     "fn print(s: ptr) -> void {\n    execute.Write(s)\n}\nfn println(s: ptr) -> void {\n    execute.WriteIn(s)\n}\nfn printInt(n: i64) -> void {\n    execute.WriteInt(n)\n}\nfn printChar(c: i64) -> void {\n    execute.WriteChar(c)\n}\nfn printLine() -> void {\n    execute.WriteIn(\"\")\n}\nfn readInt() -> i64 {\n    return execute.ReadInt()\n}\nfn readLine(buf: ptr, max: i64) -> ptr {\n    execute.ReadIn(buf, max)\n    return buf\n}\nfn ask(prompt: ptr, buf: ptr, max: i64) -> ptr {\n    execute.Write(prompt)\n    execute.ReadIn(buf, max)\n    return buf\n}\nfn askInt(prompt: ptr) -> i64 {\n    execute.Write(prompt)\n    return execute.ReadInt()\n}\nfn printBool(b: i64) -> void {\n    if b {\n        execute.WriteIn(\"true\")\n    } else {\n        execute.WriteIn(\"false\")\n    }\n}\nfn banner(text: ptr) -> void {\n    execute.WriteIn(\"================================\")\n    execute.Write(\"  \")\n    execute.WriteIn(text)\n    execute.WriteIn(\"================================\")\n}\nfn hr() -> void {\n    execute.WriteIn(\"--------------------------------\")\n}\n"},
+    {"math",   "fn abs(n: i64) -> i64 {\n    if n < 0 { return -n }\n    return n\n}\nfn max(a: i64, b: i64) -> i64 {\n    if a > b { return a }\n    return b\n}\nfn min(a: i64, b: i64) -> i64 {\n    if a < b { return a }\n    return b\n}\nfn clamp(val: i64, lo: i64, hi: i64) -> i64 {\n    if val < lo { return lo }\n    if val > hi { return hi }\n    return val\n}\nfn pow(base: i64, exp: i64) -> i64 {\n    if exp == 0 { return 1 }\n    var result = 1\n    var b = base\n    var e = exp\n    while e > 0 {\n        if e % 2 == 1 { result = result * b }\n        b = b * b\n        e = e / 2\n    }\n    return result\n}\nfn sqrt(n: i64) -> i64 {\n    if n <= 0 { return 0 }\n    if n == 1 { return 1 }\n    var x = n\n    var y = (x + 1) / 2\n    while y < x {\n        x = y\n        y = (x + n / x) / 2\n    }\n    return x\n}\nfn gcd(a: i64, b: i64) -> i64 {\n    var aa = a\n    var bb = b\n    while bb != 0 {\n        var t = bb\n        bb = aa % bb\n        aa = t\n    }\n    return aa\n}\nfn lcm(a: i64, b: i64) -> i64 {\n    return a / gcd(a, b) * b\n}\nfn factorial(n: i64) -> i64 {\n    if n <= 1 { return 1 }\n    return n * factorial(n - 1)\n}\nfn fibonacci(n: i64) -> i64 {\n    if n <= 1 { return n }\n    return fibonacci(n - 1) + fibonacci(n - 2)\n}\nfn is_prime(n: i64) -> i64 {\n    if n < 2 { return 0 }\n    if n == 2 { return 1 }\n    if n % 2 == 0 { return 0 }\n    var i = 3\n    while i * i <= n {\n        if n % i == 0 { return 0 }\n        i = i + 2\n    }\n    return 1\n}\nfn is_even(n: i64) -> i64 {\n    if n % 2 == 0 { return 1 }\n    return 0\n}\nfn is_odd(n: i64) -> i64 {\n    if n % 2 != 0 { return 1 }\n    return 0\n}\nfn sign(n: i64) -> i64 {\n    if n > 0 { return 1 }\n    if n < 0 { return -1 }\n    return 0\n}\nfn digits(n: i64) -> i64 {\n    if n == 0 { return 1 }\n    var count = 0\n    var num = n\n    if num < 0 { num = -num }\n    while num > 0 {\n        count = count + 1\n        num = num / 10\n    }\n    return count\n}\nfn sum_digits(n: i64) -> i64 {\n    var num = n\n    if num < 0 { num = -num }\n    var s = 0\n    while num > 0 {\n        s = s + num % 10\n        num = num / 10\n    }\n    return s\n}\nfn reverse(n: i64) -> i64 {\n    var result = 0\n    var num = n\n    if num < 0 { num = -num }\n    while num > 0 {\n        result = result * 10 + num % 10\n        num = num / 10\n    }\n    return result\n}\n"},
+    {"string", "fn len(s: ptr) -> i64 {\n    return execute.StrLen(s)\n}\nfn eq(a: ptr, b: ptr) -> i64 {\n    return execute.StrEq(a, b)\n}\nfn copy(dst: ptr, src_s: ptr) -> void {\n    execute.StrCopy(dst, src_s)\n}\nfn cat(dst: ptr, src_s: ptr) -> void {\n    execute.StrCat(dst, src_s)\n}\nfn new(size: i64) -> ptr {\n    var buf = execute.Alloc(size)\n    @buf = 0\n    return buf\n}\nfn free(buf: ptr, size: i64) -> void {\n    execute.Free(buf, size)\n}\nfn empty(s: ptr) -> i64 {\n    var first = @s\n    if first == 0 { return 1 }\n    return 0\n}\nfn contains(s: ptr, ch: i64) -> i64 {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { return 0 }\n        if c == ch { return 1 }\n        p = p + 1\n    }\n    return 0\n}\nfn index_of(s: ptr, ch: i64) -> i64 {\n    var p = s\n    var i = 0\n    loop {\n        var c = @p\n        if c == 0 { return -1 }\n        if c == ch { return i }\n        p = p + 1\n        i = i + 1\n    }\n    return -1\n}\nfn to_upper(s: ptr) -> void {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c >= 97 && c <= 122 {\n            @p = c - 32\n        }\n        p = p + 1\n    }\n}\nfn to_lower(s: ptr) -> void {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c >= 65 && c <= 90 {\n            @p = c + 32\n        }\n        p = p + 1\n    }\n}\nfn trim_newline(s: ptr) -> void {\n    var l = execute.StrLen(s)\n    if l == 0 { return }\n    var p = s + l - 1\n    var last = @p\n    if last == 10 {\n        @p = 0\n    }\n}\nfn count_char(s: ptr, ch: i64) -> i64 {\n    var count = 0\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c == ch { count = count + 1 }\n        p = p + 1\n    }\n    return count\n}\nfn repeat_char(buf: ptr, ch: i64, times: i64) -> void {\n    var p = buf\n    var i = 0\n    while i < times {\n        @p = ch\n        p = p + 1\n        i = i + 1\n    }\n    @p = 0\n}\nfn starts_with(s: ptr, prefix: ptr) -> i64 {\n    var sp = s\n    var pp = prefix\n    loop {\n        var pc = @pp\n        if pc == 0 { return 1 }\n        var sc = @sp\n        if sc != pc { return 0 }\n        sp = sp + 1\n        pp = pp + 1\n    }\n    return 0\n}\nfn ends_with(s: ptr, suffix: ptr) -> i64 {\n    var slen = execute.StrLen(s)\n    var suflen = execute.StrLen(suffix)\n    if suflen > slen { return 0 }\n    var sp = s + slen - suflen\n    var pp = suffix\n    loop {\n        var pc = @pp\n        if pc == 0 { return 1 }\n        var sc = @sp\n        if sc != pc { return 0 }\n        sp = sp + 1\n        pp = pp + 1\n    }\n    return 0\n}\n"},
+    {"memory", "fn alloc(size: i64) -> ptr {\n    return execute.Alloc(size)\n}\nfn free(buf: ptr, size: i64) -> void {\n    execute.Free(buf, size)\n}\nfn alloc_zeroed(size: i64) -> ptr {\n    var buf = execute.Alloc(size)\n    var i = 0\n    while i < size {\n        buf[i] = 0\n        i = i + 1\n    }\n    return buf\n}\nfn copy(dst: ptr, src_p: ptr, bytes: i64) -> void {\n    var i = 0\n    while i < bytes {\n        dst[i] = src_p[i]\n        i = i + 1\n    }\n}\nfn zero(buf: ptr, bytes: i64) -> void {\n    var i = 0\n    while i < bytes {\n        buf[i] = 0\n        i = i + 1\n    }\n}\nfn fill(buf: ptr, val: i64, count: i64) -> void {\n    var i = 0\n    while i < count {\n        buf[i] = val\n        i = i + 1\n    }\n}\nfn realloc(old_buf: ptr, old_size: i64, new_size: i64) -> ptr {\n    var new_buf = execute.Alloc(new_size)\n    var copy_size = old_size\n    if new_size < copy_size { copy_size = new_size }\n    var i = 0\n    while i < copy_size {\n        new_buf[i] = old_buf[i]\n        i = i + 1\n    }\n    execute.Free(old_buf, old_size)\n    return new_buf\n}\n"},
+    {NULL, NULL}
+};
+
+static void write_lib_file(const char *dir, const char *name, const char *src){
+    char path[512];
+    snprintf(path,sizeof(path),"%s/%s.egg",dir,name);
+    FILE*f=fopen(path,"w");
+    if(!f){fprintf(stderr,"Cannot write %s: %s\n",path,strerror(errno));return;}
+    fputs(src,f);fclose(f);
+    printf("  \033[92m✓\033[0m  %s\n",path);
+}
+
+static void install_libs(void){
+    printf("\n\033[1m\033[96mgutterball — install standard libraries\033[0m\n\n");
+
+    /* Try /usr/local/lib/vex first, then ~/.vex/libs */
+    const char*sysdir="/usr/local/lib/vex";
+    char userdir[512];
+    const char*home=getenv("HOME");
+    if(home) snprintf(userdir,sizeof(userdir),"%s/.vex/libs",home);
+    else      snprintf(userdir,sizeof(userdir),"./.vex/libs");
+
+    /* Try system dir first */
+    if(mkdir(sysdir,0755)==0||errno==EEXIST){
+        printf("Installing to %s/\n\n",sysdir);
+        for(int i=0;BAKED_LIBS[i][0];i++)
+            write_lib_file(sysdir,BAKED_LIBS[i][0],BAKED_LIBS[i][1]);
+        printf("\n\033[92m✓ Done!\033[0m Libraries installed to %s/\n",sysdir);
+        printf("You can now use get-Library/io etc. from any directory.\n\n");
+        return;
+    }
+
+    /* Fall back to user dir */
+    printf("\033[93mNote:\033[0m Cannot write to %s (need sudo).\n",sysdir);
+    printf("Installing to %s/ instead.\n\n",userdir);
+
+    /* Create user dir (mkdir -p equivalent) */
+    char tmp[512]; strncpy(tmp,userdir,511);
+    for(char*p=tmp+1;*p;p++){
+        if(*p=='/'){*p=0;mkdir(tmp,0755);*p='/';}
+    }
+    mkdir(userdir,0755);
+
+    for(int i=0;BAKED_LIBS[i][0];i++)
+        write_lib_file(userdir,BAKED_LIBS[i][0],BAKED_LIBS[i][1]);
+    printf("\n\033[92m✓ Done!\033[0m Libraries installed to %s/\n",userdir);
+    printf("You can now use get-Library/io etc. from any directory.\n\n");
+}
+
 int main(int argc,char**argv){
     banner();
+    /* Check for --install-libs before anything else */
+    for(int i=1;i<argc;i++){
+        if(!strcmp(argv[i],"--install-libs")||!strcmp(argv[i],"-install-libs")||!strcmp(argv[i],"--install")){
+            install_libs();
+            return 0;
+        }
+    }
     const char*src=NULL,*out=NULL;
     for(int i=1;i<argc;i++){
         if(!strcmp(argv[i],"-o")&&i+1<argc)out=argv[++i];
@@ -1712,7 +1839,7 @@ int main(int argc,char**argv){
         else if(argv[i][0]!='-')src=argv[i];
         else{fprintf(stderr,"Unknown flag: %s\n",argv[i]);return 1;}
     }
-    if(!src){fprintf(stderr,"Usage: gutterball <file.egg> [-o output] [-O0]\n");return 1;}
+    if(!src){fprintf(stderr,"Usage: gutterball <file.egg> [-o output] [-O0]\n  Also: gutterball --install-libs\n");return 1;}
     char outbuf[512];
     if(!out){strncpy(outbuf,src,500);char*d=strrchr(outbuf,'.');if(d)*d=0;out=outbuf;}
 
@@ -1728,6 +1855,104 @@ int main(int argc,char**argv){
     printf("  \033[96m[2/4]\033[0m Parsing\n");
     Parser P;P.tokens=L.tokens;P.pos=0;
     Node*prog=parse_program(&P);
+
+    /* ── Resolve imports ───────────────────────────────────────── */
+    {
+        /* Get directory of source file */
+        char srcdir[512]={0};
+        strncpy(srcdir,src,500);
+        char*slash=strrchr(srcdir,'/');
+        if(slash)*slash=0; else srcdir[0]=0; /* empty = current dir */
+
+        int i=0;
+        while(i<prog->nch){
+            Node*nd=prog->ch[i];
+            if(nd->kind!=ND_IMPORT){i++;continue;}
+            const char*libname=nd->sval;
+
+            /* Search for library in order:
+             * 1. Same folder as source file
+             * 2. ~/.vex/libs/
+             * 3. /usr/local/lib/vex/
+             * 4. /usr/lib/vex/  */
+            char libpath[600];
+            FILE*lf=NULL;
+
+            /* 1. Source file directory */
+            if(!lf){
+                if(srcdir[0])snprintf(libpath,sizeof(libpath),"%s/%s.egg",srcdir,libname);
+                else          snprintf(libpath,sizeof(libpath),"%s.egg",libname);
+                lf=fopen(libpath,"r");
+            }
+            /* 2. ~/.vex/libs/ */
+            if(!lf){
+                const char*home=getenv("HOME");
+                if(home){
+                    snprintf(libpath,sizeof(libpath),"%s/.vex/libs/%s.egg",home,libname);
+                    lf=fopen(libpath,"r");
+                }
+            }
+            /* 3. /usr/local/lib/vex/ */
+            if(!lf){
+                snprintf(libpath,sizeof(libpath),"/usr/local/lib/vex/%s.egg",libname);
+                lf=fopen(libpath,"r");
+            }
+            /* 4. /usr/lib/vex/ */
+            if(!lf){
+                snprintf(libpath,sizeof(libpath),"/usr/lib/vex/%s.egg",libname);
+                lf=fopen(libpath,"r");
+            }
+
+            if(lf){
+                printf("  \033[96m[lib]\033[0m  %s  (%s)\n",libname,libpath);
+            } else {
+                fprintf(stderr,
+                    "\033[91m[gutterball]\033[0m Library not found: '%s'\n"
+                    "  Searched:\n"
+                    "    %s/%s.egg  (source dir)\n"
+                    "    ~/.vex/libs/%s.egg\n"
+                    "    /usr/local/lib/vex/%s.egg\n"
+                    "    /usr/lib/vex/%s.egg\n"
+                    "  Install system-wide: sudo cp %s.egg /usr/local/lib/vex/\n",
+                    libname, srcdir[0]?srcdir:".", libname,
+                    libname, libname, libname, libname);
+                exit(1);
+            }
+            fseek(lf,0,SEEK_END);long lsz=ftell(lf);rewind(lf);
+            char*ltext=xmalloc(lsz+1);
+            fread(ltext,1,lsz,lf);ltext[lsz]=0;fclose(lf);
+
+            /* Lex + parse the library */
+            Lexer LL;memset(&LL,0,sizeof(LL));LL.src=ltext;LL.line=1;lex(&LL);
+            Parser LP;LP.tokens=LL.tokens;LP.pos=0;
+            Node*libprog=parse_program(&LP);
+
+            /* Collect all fn names in this library first */
+            char libfns[256][64]; int nfns=0;
+            for(int j=0;j<libprog->nch;j++){
+                if(libprog->ch[j]->kind==ND_FNDEF&&nfns<256)
+                    strncpy(libfns[nfns++],libprog->ch[j]->sval,63);
+            }
+            /* Prefix all fn names and internal calls with "libname." */
+            prog->ch[i]=prog->ch[--prog->nch]; /* swap-remove import node */
+            for(int j=0;j<libprog->nch;j++){
+                Node*fn=libprog->ch[j];
+                if(fn->kind==ND_FNDEF){
+                    /* rename internal calls first */
+                    prefix_calls(fn,libname,libfns,nfns);
+                    /* rename the function itself */
+                    char newname[200];
+                    snprintf(newname,sizeof(newname),"%s.%s",libname,fn->sval);
+                    free(fn->sval);fn->sval=xstrdup(newname);
+                    nadd(prog,fn);
+                } else if(fn->kind==ND_STRUCT_DEF){
+                    nadd(prog,fn);
+                }
+            }
+            free(ltext);
+            /* Don't increment i — we removed current slot */
+        }
+    }
 
     printf("  \033[96m[3/4]\033[0m Generating x86-64  (O%d)\n",opt_level);
     CG g;cg_init(&g);
