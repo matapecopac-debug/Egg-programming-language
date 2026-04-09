@@ -7,7 +7,7 @@ GREEN="\033[92m"
 RED="\033[91m"
 RESET="\033[0m"
 
-echo -e "${BOLD}${CYAN}Installing gutterball v4...${RESET}"
+echo -e "${BOLD}${CYAN}Installing gutterball v5...${RESET}"
 
 [ "$(uname -m)" = "x86_64" ] || { echo -e "${RED}Needs x86_64${RESET}"; exit 1; }
 
@@ -20,8 +20,8 @@ sudo chmod 755 /usr/local/bin/gutterball
 echo -e "${CYAN}Creating library directory...${RESET}"
 sudo mkdir -p /usr/local/lib/vex
 
-# Write all libraries directly — no separate files needed
-echo -e "${CYAN}Installing standard libraries...${RESET}"
+# Write all libraries directly using sudo tee
+echo -e "${CYAN}Installing libraries...${RESET}"
 
 sudo tee /usr/local/lib/vex/io.egg > /dev/null << 'EOLIB'
 fn print(s: ptr) -> void {
@@ -378,18 +378,85 @@ fn realloc(old_buf: ptr, old_size: i64, new_size: i64) -> ptr {
 EOLIB
 echo -e "  ${GREEN}✓${RESET} memory.egg"
 
+sudo tee /usr/local/lib/vex/sort.egg > /dev/null << 'EOLIB'
+fn _sort_and_print(arr: ptr, len: i64) -> void {
+    for i in 0..len {
+        for j in 0..len - 1 {
+            if arr[j] > arr[j + 1] {
+                var tmp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = tmp
+            }
+        }
+    }
+    execute.WriteIn("Sorted:")
+    for i in 0..len {
+        execute.WriteInt(arr[i])
+    }
+}
+fn min(arr: ptr, len: i64) -> i64 {
+    var m = arr[0]
+    for i in 1..len {
+        if arr[i] < m { m = arr[i] }
+    }
+    return m
+}
+fn max(arr: ptr, len: i64) -> i64 {
+    var m = arr[0]
+    for i in 1..len {
+        if arr[i] > m { m = arr[i] }
+    }
+    return m
+}
+fn asc(arr: ptr, len: i64) -> void {
+    for i in 0..len {
+        for j in 0..len - 1 {
+            if arr[j] > arr[j + 1] {
+                var tmp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = tmp
+            }
+        }
+    }
+}
+fn desc(arr: ptr, len: i64) -> void {
+    for i in 0..len {
+        for j in 0..len - 1 {
+            if arr[j] < arr[j + 1] {
+                var tmp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = tmp
+            }
+        }
+    }
+}
+fn is_sorted(arr: ptr, len: i64) -> i64 {
+    for i in 0..len - 1 {
+        if arr[i] > arr[i + 1] { return 0 }
+    }
+    return 1
+}
+fn sum(arr: ptr, len: i64) -> i64 {
+    var total = 0
+    for i in 0..len {
+        total = total + arr[i]
+    }
+    return total
+}
+EOLIB
+echo -e "  ${GREEN}✓${RESET} sort.egg"
+
 echo ""
-echo -e "${GREEN}✓ gutterball v4 fully installed!${RESET}"
+echo -e "${GREEN}✓ gutterball v5 fully installed!${RESET}"
 echo ""
 echo "Compiler:  /usr/local/bin/gutterball"
 echo "Libraries: /usr/local/lib/vex/"
 echo ""
-echo "Usage:"
-echo "  gutterball myfile.egg -o myprogram"
-echo "  ./myprogram"
+echo "Usage:     gutterball myfile.egg -o myprogram"
+echo "           ./myprogram"
 echo ""
-echo "Import libraries in your .egg files:"
-echo "  get-Library/io"
-echo "  get-Library/math"
-echo "  get-Library/string"
-echo "  get-Library/memory"
+echo "Libraries: get-Library/io"
+echo "           get-Library/math"
+echo "           get-Library/string"
+echo "           get-Library/memory"
+echo "           get-Library/sort"

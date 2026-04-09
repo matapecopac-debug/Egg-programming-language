@@ -197,6 +197,7 @@ typedef enum {
     ND_IDENT,ND_BINOP,ND_UNARY,ND_CAST,
     ND_CALL,ND_EXEC_CALL,ND_INDEX,ND_FIELD,ND_ADDROF,ND_DEREF,
     ND_IMPORT,
+    ND_SORT_CALL,
     ND_VARDECL,ND_CONSTDECL,ND_ASSIGN,
     ND_RETURN,ND_IF,ND_WHILE,ND_FOR,ND_LOOP,ND_BREAK,ND_CONTINUE,
     ND_EXPRSTMT,ND_BLOCK,ND_FNDEF,ND_PARAM,ND_STRUCT_DEF,ND_PROGRAM
@@ -266,6 +267,18 @@ static Node *parse_primary(Parser*P){
             pa(P); /* consume dot */
             if(pc(P,TT_IDENT)){
                 Token*meth=pa(P);
+                /* sort.num{...} — curly brace literal */
+                if(pc(P,TT_LBRACE)){
+                    pa(P); /* consume { */
+                    char fullname[128];
+                    snprintf(fullname,sizeof(fullname),"%s.%s",t->sval,meth->sval);
+                    Node*n=nn(ND_SORT_CALL,t->line);n->sval=xstrdup(fullname);
+                    while(!pc(P,TT_RBRACE)&&!pc(P,TT_EOF)){
+                        nadd(n,parse_expr(P));
+                        if(!pm(P,TT_COMMA))break;
+                    }
+                    pe(P,TT_RBRACE,"}");return n;
+                }
                 if(pm(P,TT_LPAREN)){
                     /* namespace.method call: combine as "ns.method" */
                     char fullname[128];
@@ -1133,6 +1146,49 @@ static void cg_expr(CG*g,Node*e){
         break;
     }
 
+    case ND_SORT_CALL:{
+        /* sort.something{v1,v2,...} — allocate stack array, fill, call sort fn */
+        int nvals=e->nch;
+        if(nvals==0){break;}
+        /* sub rsp to make room for nvals * 8 bytes, aligned */
+        int frame_bytes=nvals*8;
+        if(frame_bytes%16)frame_bytes+=(16-frame_bytes%16);
+        e_sub_rsp(&g->code,frame_bytes);
+        /* fill array: evaluate each value, store at [rsp + i*8] */
+        for(int vi=0;vi<nvals;vi++){
+            cg_expr(g,e->ch[vi]);  /* value in RAX */
+            /* mov [rsp + vi*8], rax */
+            int off=vi*8;
+            if(off==0){
+                /* mov [rsp], rax */
+                e3(&g->code,0x48,0x89,0x04); e1(&g->code,0x24);
+            } else if(off<=127){
+                e4(&g->code,0x48,0x89,0x44,0x24); e1(&g->code,(uint8_t)off);
+            } else {
+                e4(&g->code,0x48,0x89,0x84,0x24); ei32(&g->code,off);
+            }
+        }
+        /* call sort.num_internal(rdi=ptr, rsi=len) */
+        e_mov(&g->code,RDI,RSP);
+        e_mov_imm(&g->code,RSI,(int64_t)nvals);
+        /* emit call to the sort fn — named "sort.num_internal" or whatever prefix */
+        /* extract prefix from e->sval: "sort.num" -> call "sort.num_internal" */
+        {
+            char internal_fn[200];
+            /* get the namespace part: everything before the dot */
+            char ns[64]={0};
+            const char*dot=strchr(e->sval,'.');
+            if(dot){strncpy(ns,e->sval,dot-e->sval);}
+            else   {strncpy(ns,e->sval,63);}
+            snprintf(internal_fn,sizeof(internal_fn),"%s._sort_and_print",ns);
+            size_t s=e_call(&g->code);
+            strncpy(g->fn_patches[g->nfnp].name,internal_fn,63);
+            g->fn_patches[g->nfnp].site=s;
+            g->nfnp++;
+        }
+        e_add_rsp(&g->code,frame_bytes);
+        break;
+    }
     case ND_EXEC_CALL:{
         const char*m=e->sval;
 
@@ -1773,6 +1829,7 @@ static const char *BAKED_LIBS[][2] = {
     {"math",   "fn abs(n: i64) -> i64 {\n    if n < 0 { return -n }\n    return n\n}\nfn max(a: i64, b: i64) -> i64 {\n    if a > b { return a }\n    return b\n}\nfn min(a: i64, b: i64) -> i64 {\n    if a < b { return a }\n    return b\n}\nfn clamp(val: i64, lo: i64, hi: i64) -> i64 {\n    if val < lo { return lo }\n    if val > hi { return hi }\n    return val\n}\nfn pow(base: i64, exp: i64) -> i64 {\n    if exp == 0 { return 1 }\n    var result = 1\n    var b = base\n    var e = exp\n    while e > 0 {\n        if e % 2 == 1 { result = result * b }\n        b = b * b\n        e = e / 2\n    }\n    return result\n}\nfn sqrt(n: i64) -> i64 {\n    if n <= 0 { return 0 }\n    if n == 1 { return 1 }\n    var x = n\n    var y = (x + 1) / 2\n    while y < x {\n        x = y\n        y = (x + n / x) / 2\n    }\n    return x\n}\nfn gcd(a: i64, b: i64) -> i64 {\n    var aa = a\n    var bb = b\n    while bb != 0 {\n        var t = bb\n        bb = aa % bb\n        aa = t\n    }\n    return aa\n}\nfn lcm(a: i64, b: i64) -> i64 {\n    return a / gcd(a, b) * b\n}\nfn factorial(n: i64) -> i64 {\n    if n <= 1 { return 1 }\n    return n * factorial(n - 1)\n}\nfn fibonacci(n: i64) -> i64 {\n    if n <= 1 { return n }\n    return fibonacci(n - 1) + fibonacci(n - 2)\n}\nfn is_prime(n: i64) -> i64 {\n    if n < 2 { return 0 }\n    if n == 2 { return 1 }\n    if n % 2 == 0 { return 0 }\n    var i = 3\n    while i * i <= n {\n        if n % i == 0 { return 0 }\n        i = i + 2\n    }\n    return 1\n}\nfn is_even(n: i64) -> i64 {\n    if n % 2 == 0 { return 1 }\n    return 0\n}\nfn is_odd(n: i64) -> i64 {\n    if n % 2 != 0 { return 1 }\n    return 0\n}\nfn sign(n: i64) -> i64 {\n    if n > 0 { return 1 }\n    if n < 0 { return -1 }\n    return 0\n}\nfn digits(n: i64) -> i64 {\n    if n == 0 { return 1 }\n    var count = 0\n    var num = n\n    if num < 0 { num = -num }\n    while num > 0 {\n        count = count + 1\n        num = num / 10\n    }\n    return count\n}\nfn sum_digits(n: i64) -> i64 {\n    var num = n\n    if num < 0 { num = -num }\n    var s = 0\n    while num > 0 {\n        s = s + num % 10\n        num = num / 10\n    }\n    return s\n}\nfn reverse(n: i64) -> i64 {\n    var result = 0\n    var num = n\n    if num < 0 { num = -num }\n    while num > 0 {\n        result = result * 10 + num % 10\n        num = num / 10\n    }\n    return result\n}\n"},
     {"string", "fn len(s: ptr) -> i64 {\n    return execute.StrLen(s)\n}\nfn eq(a: ptr, b: ptr) -> i64 {\n    return execute.StrEq(a, b)\n}\nfn copy(dst: ptr, src_s: ptr) -> void {\n    execute.StrCopy(dst, src_s)\n}\nfn cat(dst: ptr, src_s: ptr) -> void {\n    execute.StrCat(dst, src_s)\n}\nfn new(size: i64) -> ptr {\n    var buf = execute.Alloc(size)\n    @buf = 0\n    return buf\n}\nfn free(buf: ptr, size: i64) -> void {\n    execute.Free(buf, size)\n}\nfn empty(s: ptr) -> i64 {\n    var first = @s\n    if first == 0 { return 1 }\n    return 0\n}\nfn contains(s: ptr, ch: i64) -> i64 {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { return 0 }\n        if c == ch { return 1 }\n        p = p + 1\n    }\n    return 0\n}\nfn index_of(s: ptr, ch: i64) -> i64 {\n    var p = s\n    var i = 0\n    loop {\n        var c = @p\n        if c == 0 { return -1 }\n        if c == ch { return i }\n        p = p + 1\n        i = i + 1\n    }\n    return -1\n}\nfn to_upper(s: ptr) -> void {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c >= 97 && c <= 122 {\n            @p = c - 32\n        }\n        p = p + 1\n    }\n}\nfn to_lower(s: ptr) -> void {\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c >= 65 && c <= 90 {\n            @p = c + 32\n        }\n        p = p + 1\n    }\n}\nfn trim_newline(s: ptr) -> void {\n    var l = execute.StrLen(s)\n    if l == 0 { return }\n    var p = s + l - 1\n    var last = @p\n    if last == 10 {\n        @p = 0\n    }\n}\nfn count_char(s: ptr, ch: i64) -> i64 {\n    var count = 0\n    var p = s\n    loop {\n        var c = @p\n        if c == 0 { break }\n        if c == ch { count = count + 1 }\n        p = p + 1\n    }\n    return count\n}\nfn repeat_char(buf: ptr, ch: i64, times: i64) -> void {\n    var p = buf\n    var i = 0\n    while i < times {\n        @p = ch\n        p = p + 1\n        i = i + 1\n    }\n    @p = 0\n}\nfn starts_with(s: ptr, prefix: ptr) -> i64 {\n    var sp = s\n    var pp = prefix\n    loop {\n        var pc = @pp\n        if pc == 0 { return 1 }\n        var sc = @sp\n        if sc != pc { return 0 }\n        sp = sp + 1\n        pp = pp + 1\n    }\n    return 0\n}\nfn ends_with(s: ptr, suffix: ptr) -> i64 {\n    var slen = execute.StrLen(s)\n    var suflen = execute.StrLen(suffix)\n    if suflen > slen { return 0 }\n    var sp = s + slen - suflen\n    var pp = suffix\n    loop {\n        var pc = @pp\n        if pc == 0 { return 1 }\n        var sc = @sp\n        if sc != pc { return 0 }\n        sp = sp + 1\n        pp = pp + 1\n    }\n    return 0\n}\n"},
     {"memory", "fn alloc(size: i64) -> ptr {\n    return execute.Alloc(size)\n}\nfn free(buf: ptr, size: i64) -> void {\n    execute.Free(buf, size)\n}\nfn alloc_zeroed(size: i64) -> ptr {\n    var buf = execute.Alloc(size)\n    var i = 0\n    while i < size {\n        buf[i] = 0\n        i = i + 1\n    }\n    return buf\n}\nfn copy(dst: ptr, src_p: ptr, bytes: i64) -> void {\n    var i = 0\n    while i < bytes {\n        dst[i] = src_p[i]\n        i = i + 1\n    }\n}\nfn zero(buf: ptr, bytes: i64) -> void {\n    var i = 0\n    while i < bytes {\n        buf[i] = 0\n        i = i + 1\n    }\n}\nfn fill(buf: ptr, val: i64, count: i64) -> void {\n    var i = 0\n    while i < count {\n        buf[i] = val\n        i = i + 1\n    }\n}\nfn realloc(old_buf: ptr, old_size: i64, new_size: i64) -> ptr {\n    var new_buf = execute.Alloc(new_size)\n    var copy_size = old_size\n    if new_size < copy_size { copy_size = new_size }\n    var i = 0\n    while i < copy_size {\n        new_buf[i] = old_buf[i]\n        i = i + 1\n    }\n    execute.Free(old_buf, old_size)\n    return new_buf\n}\n"},
+    {"sort",   "fn _sort_and_print(arr: ptr, len: i64) -> void {\n    for i in 0..len {\n        for j in 0..len - 1 {\n            if arr[j] > arr[j + 1] {\n                var tmp = arr[j]\n                arr[j] = arr[j + 1]\n                arr[j + 1] = tmp\n            }\n        }\n    }\n    execute.WriteIn(\"Sorted:\")\n    for i in 0..len {\n        execute.WriteInt(arr[i])\n    }\n}\nfn min(arr: ptr, len: i64) -> i64 {\n    var m = arr[0]\n    for i in 1..len {\n        if arr[i] < m { m = arr[i] }\n    }\n    return m\n}\nfn max(arr: ptr, len: i64) -> i64 {\n    var m = arr[0]\n    for i in 1..len {\n        if arr[i] > m { m = arr[i] }\n    }\n    return m\n}\nfn asc(arr: ptr, len: i64) -> void {\n    for i in 0..len {\n        for j in 0..len - 1 {\n            if arr[j] > arr[j + 1] {\n                var tmp = arr[j]\n                arr[j] = arr[j + 1]\n                arr[j + 1] = tmp\n            }\n        }\n    }\n}\nfn desc(arr: ptr, len: i64) -> void {\n    for i in 0..len {\n        for j in 0..len - 1 {\n            if arr[j] < arr[j + 1] {\n                var tmp = arr[j]\n                arr[j] = arr[j + 1]\n                arr[j + 1] = tmp\n            }\n        }\n    }\n}\nfn is_sorted(arr: ptr, len: i64) -> i64 {\n    for i in 0..len - 1 {\n        if arr[i] > arr[i + 1] { return 0 }\n    }\n    return 1\n}\nfn sum(arr: ptr, len: i64) -> i64 {\n    var total = 0\n    for i in 0..len {\n        total = total + arr[i]\n    }\n    return total\n}\n"},
     {NULL, NULL}
 };
 
