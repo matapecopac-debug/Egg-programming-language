@@ -10,16 +10,16 @@ it only runs on Linux machines, so to start using it you do this:
    
              cd ~/Downloads/Egg-programming-language-main
    
-5. Make the compiler executable:
+4. Set it up
    
                chmod +x install.sh gutterball
                ./install.sh
    
-6. Make your first program:
+5. Make your first program:
 
              nano hello.egg
    
-7. Write in the code:
+6. Write in the code:
 
                 fn main() -> void {
                    execute.WriteIn("Hello from Vex!")
@@ -27,7 +27,7 @@ it only runs on Linux machines, so to start using it you do this:
                    execute.Exit(0)
                 }
     
-8. Compile:
+7. Compile:
 
               gutterball hello.egg -o hello
 9. Run:
