@@ -22,7 +22,7 @@ it only runs on Linux machines, so to start using it you do this:
 6. Write in the code:
 
                 fn main() -> void {
-                   execute.WriteIn("Hello from Vex!")
+                   execute.WriteIn("Hello World!")
                    execute.WriteInt(10 + 5)
                    execute.Exit(0)
                 }
