@@ -327,6 +327,7 @@ static Node *parse_unary(Parser*P){
 
 static int prec(TokType t){
     switch(t){case TT_OR:return 1;case TT_AND:return 2;case TT_BOR:return 3;case TT_BXOR:return 4;
+    case TT_AMP:return 5; /* bitwise AND — when used as binary op */
     case TT_EQEQ:case TT_NEQ:return 6;case TT_LT:case TT_GT:case TT_LTE:case TT_GTE:return 7;
     case TT_SHL:case TT_SHR:return 8;case TT_PLUS:case TT_MINUS:return 9;
     case TT_STAR:case TT_SLASH:case TT_PERCENT:return 10;default:return -1;}
@@ -336,6 +337,7 @@ static const char *opstr(TokType t){
     case TT_SLASH:return"/";case TT_PERCENT:return"%";case TT_EQEQ:return"==";case TT_NEQ:return"!=";
     case TT_LT:return"<";case TT_GT:return">";case TT_LTE:return"<=";case TT_GTE:return">=";
     case TT_AND:return"&&";case TT_OR:return"||";case TT_BOR:return"|";case TT_BXOR:return"^";
+    case TT_AMP:return"&";
     case TT_SHL:return"<<";case TT_SHR:return">>";default:return"?";}
 }
 static Node *parse_binop(Parser*P,int min_p){
@@ -483,6 +485,10 @@ static Node *parse_program(Parser*P){
 #define R9  9
 #define R10 10
 #define R11 11
+#define R12 12
+#define R13 13
+#define R14 14
+#define R15 15
 
 /* REX prefix helpers */
 static int ri(int r){return r&7;}
@@ -497,6 +503,7 @@ static void e1(Buf*b,uint8_t a){buf_push(b,a);}
 static void e2(Buf*b,uint8_t a,uint8_t c){buf_push(b,a);buf_push(b,c);}
 static void e3(Buf*b,uint8_t a,uint8_t c,uint8_t d){buf_push(b,a);buf_push(b,c);buf_push(b,d);}
 static void e4(Buf*b,uint8_t a,uint8_t c,uint8_t d,uint8_t e){buf_push(b,a);buf_push(b,c);buf_push(b,d);buf_push(b,e);}
+static void e5(Buf*b,uint8_t a,uint8_t c,uint8_t d,uint8_t e,uint8_t f){buf_push(b,a);buf_push(b,c);buf_push(b,d);buf_push(b,e);buf_push(b,f);}
 static void ei32(Buf*b,int32_t v){buf_bytes(b,&v,4);}
 static void ei64(Buf*b,int64_t v){buf_bytes(b,&v,8);}
 
@@ -1024,7 +1031,9 @@ static void cg_expr(CG*g,Node*e){
     }
     case ND_DEREF:{
         cg_expr(g,e->ch[0]);
-        e_load_ptr(&g->code,RAX,RAX);
+        /* Load 1 byte (movzx rax, byte[rax]) — ptr arithmetic is byte-level */
+        /* REX.W=1, 0F B6, ModRM(0, rax=0, rax=0) = 0x00 */
+        e4(&g->code,0x48,0x0F,0xB6,0x00); /* movzx rax,byte[rax] */
         break;
     }
     case ND_INDEX:{
@@ -1105,6 +1114,7 @@ static void cg_expr(CG*g,Node*e){
         else if(!strcmp(op,"*")) e_imul(&g->code,RAX,RCX);
         else if(!strcmp(op,"/")) {e_cqo(&g->code);e_idiv(&g->code,RCX);}
         else if(!strcmp(op,"%")) {e_cqo(&g->code);e_idiv(&g->code,RCX);e_mov(&g->code,RAX,RDX);}
+        else if(!strcmp(op,"&")) e_and(&g->code,RAX,RCX);
         else if(!strcmp(op,"|")) e_or(&g->code,RAX,RCX);
         else if(!strcmp(op,"^")) e_xor(&g->code,RAX,RCX);
         else if(!strcmp(op,"<<"))e_mov(&g->code,RCX,RAX),e_pop(&g->code,RAX),e_shl(&g->code,RAX); /* WRONG ORDER */
@@ -1533,8 +1543,422 @@ static void cg_expr(CG*g,Node*e){
             e_mov_imm(&g->code,RAX,60);
             e_syscall(&g->code);
         }
+
+        /* ── Low-level / systems calls ───────────────────── */
+
+        else if(!strcmp(m,"GetPID")){
+            /* sys_getpid() -> rax */
+            if(e->nch!=0)die("[Line %d] execute.GetPID() takes no args",e->line);
+            e_mov_imm(&g->code,RAX,39); /* sys_getpid */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"GetUID")){
+            if(e->nch!=0)die("[Line %d] execute.GetUID() takes no args",e->line);
+            e_mov_imm(&g->code,RAX,102); /* sys_getuid */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Sleep")){
+            /* Sleep(seconds) — uses sys_nanosleep with a timespec on stack */
+            if(e->nch!=1)die("[Line %d] execute.Sleep(seconds)",e->line);
+            cg_expr(g,e->ch[0]);
+            /* push timespec: tv_sec=rax, tv_nsec=0 */
+            e_push(&g->code,RAX);          /* tv_sec */
+            e_xor(&g->code,RCX,RCX);
+            e_push(&g->code,RCX);          /* tv_nsec = 0 (pushed first = higher addr) */
+            /* swap: timespec is {tv_sec, tv_nsec} so tv_sec at lower addr */
+            /* Actually: push tv_nsec first (higher addr), then tv_sec (lower addr) */
+            /* Redo: sub rsp,16; mov [rsp],rax (tv_sec); mov [rsp+8],0 (tv_nsec) */
+            g->code.len -= 6; /* undo the two pushes */
+            e_sub_rsp(&g->code,16);
+            /* mov [rsp], rax */
+            e3(&g->code,0x48,0x89,0x04); e1(&g->code,0x24);
+            /* mov qword[rsp+8], 0 */
+            e4(&g->code,0x48,0xC7,0x44,0x24); e1(&g->code,0x08); ei32(&g->code,0);
+            e_mov(&g->code,RDI,RSP);       /* rdi = &timespec */
+            e_xor(&g->code,RSI,RSI);       /* rsi = NULL (no remainder) */
+            e_mov_imm(&g->code,RAX,35);    /* sys_nanosleep */
+            e_syscall(&g->code);
+            e_add_rsp(&g->code,16);
+        }
+        else if(!strcmp(m,"SleepMs")){
+            /* SleepMs(milliseconds) */
+            if(e->nch!=1)die("[Line %d] execute.SleepMs(ms)",e->line);
+            cg_expr(g,e->ch[0]);           /* rax = ms */
+            e_push(&g->code,RAX);          /* save ms */
+            /* tv_sec = ms / 1000 */
+            e_mov_imm(&g->code,RCX,1000);
+            e_cqo(&g->code);
+            e_idiv(&g->code,RCX);          /* rax=sec, rdx=rem_ms */
+            e_push(&g->code,RAX);          /* save sec */
+            /* tv_nsec = rem_ms * 1000000 */
+            e_mov(&g->code,RAX,RDX);
+            e_mov_imm(&g->code,RCX,1000000);
+            e_imul(&g->code,RAX,RCX);
+            e_push(&g->code,RAX);          /* push tv_nsec */
+            e_pop(&g->code,RSI);           /* rsi = tv_nsec */
+            e_pop(&g->code,RDI);           /* rdi = tv_sec */
+            e_pop(&g->code,RCX);           /* clean ms */
+            e_sub_rsp(&g->code,16);
+            e3(&g->code,0x48,0x89,0x3C); e1(&g->code,0x24); /* mov [rsp],rdi=sec */
+            e4(&g->code,0x48,0x89,0x74,0x24); e1(&g->code,0x08); /* mov [rsp+8],rsi=nsec */
+            e_mov(&g->code,RDI,RSP);
+            e_xor(&g->code,RSI,RSI);
+            e_mov_imm(&g->code,RAX,35);
+            e_syscall(&g->code);
+            e_add_rsp(&g->code,16);
+        }
+        else if(!strcmp(m,"FileOpen")){
+            /* FileOpen(path_ptr, flags) -> fd
+             * flags: 0=read, 1=write|create|trunc, 2=read+write */
+            if(e->nch!=2)die("[Line %d] execute.FileOpen(path, flags)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX); /* path */
+            cg_expr(g,e->ch[1]);                         /* flags */
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            /* if flags==1: O_WRONLY|O_CREAT|O_TRUNC = 0x241, mode=0644 */
+            /* if flags==2: O_RDWR = 2 */
+            /* if flags==0: O_RDONLY = 0 */
+            /* Simplify: pass flags directly as open flags, mode=0644 */
+            e_mov_imm(&g->code,RDX,0644); /* mode */
+            e_mov_imm(&g->code,RAX,2);    /* sys_open */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileRead")){
+            /* FileRead(fd, buf, len) -> bytes_read */
+            if(e->nch!=3)die("[Line %d] execute.FileRead(fd,buf,len)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,0); /* sys_read */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileWrite")){
+            /* FileWrite(fd, buf, len) -> bytes_written */
+            if(e->nch!=3)die("[Line %d] execute.FileWrite(fd,buf,len)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,1); /* sys_write */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileClose")){
+            /* FileClose(fd) */
+            if(e->nch!=1)die("[Line %d] execute.FileClose(fd)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);
+            e_mov_imm(&g->code,RAX,3); /* sys_close */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileSeek")){
+            /* FileSeek(fd, offset, whence) -> new_offset
+             * whence: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END */
+            if(e->nch!=3)die("[Line %d] execute.FileSeek(fd,offset,whence)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,8); /* sys_lseek */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileStat")){
+            /* FileStat(path, stat_buf) -> 0 on success, -1 on error */
+            if(e->nch!=2)die("[Line %d] execute.FileStat(path,buf)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,4); /* sys_stat */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"FileDelete")){
+            /* FileDelete(path) -> 0 on success */
+            if(e->nch!=1)die("[Line %d] execute.FileDelete(path)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);
+            e_mov_imm(&g->code,RAX,87); /* sys_unlink */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Fork")){
+            /* Fork() -> 0 in child, child_pid in parent */
+            if(e->nch!=0)die("[Line %d] execute.Fork() takes no args",e->line);
+            e_mov_imm(&g->code,RAX,57); /* sys_fork */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Wait")){
+            /* Wait() -> child pid. Waits for any child. */
+            if(e->nch!=0)die("[Line %d] execute.Wait() takes no args",e->line);
+            e_mov_imm(&g->code,RDI,-1);  /* pid=-1 = any child */
+            e_xor(&g->code,RSI,RSI);     /* wstatus=NULL */
+            e_xor(&g->code,RDX,RDX);     /* options=0 */
+            e_xor(&g->code,R10,R10);     /* rusage=NULL */
+            e_mov_imm(&g->code,RAX,61);  /* sys_wait4 */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Exec")){
+            /* Exec(path, argv_ptr) — execve */
+            if(e->nch!=2)die("[Line %d] execute.Exec(path,argv)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_xor(&g->code,RDX,RDX);    /* envp=NULL */
+            e_mov_imm(&g->code,RAX,59); /* sys_execve */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Args")){
+            /* Args(n) -> ptr to argv[n] string
+             * argc/argv are at [rsp] at program entry. We save them in globals.
+             * Simpler: use the stack-based argv that Linux puts before _start. */
+            if(e->nch!=1)die("[Line %d] execute.Args(n)",e->line);
+            cg_expr(g,e->ch[0]);   /* rax = n */
+            /* argv is passed in rdi at _start entry (actually on stack).
+             * We stored argc in r12 and argv in r13 at startup. */
+            e_mov(&g->code,RCX,RAX);    /* rcx = n */
+            /* rax = argv[n] = [r13 + n*8] */
+            /* lea rax,[r13+rcx*8] then mov rax,[rax] */
+            /* REX.W.R.B=0x4D, 8D, ModRM(0,rax=0,SIB=4), SIB(3,rcx=1,r13=5) */
+            e4(&g->code,0x4F,0x8D,0x04,0xCD); ei32(&g->code,0); /* wrong, redo */
+            g->code.len -= 8;
+            /* simpler: imul rcx,8 then add r13, load */
+            /* imul rcx,rcx,8 */
+            e4(&g->code,0x48,0x6B,0xC9,0x08);
+            /* add rcx,r13 */
+            e3(&g->code,0x4C,0x01,0xE9);
+            /* mov rax,[rcx] */
+            e3(&g->code,0x48,0x8B,0x01);
+        }
+        else if(!strcmp(m,"ArgCount")){
+            /* ArgCount() -> argc */
+            if(e->nch!=0)die("[Line %d] execute.ArgCount() takes no args",e->line);
+            /* return r12 (saved argc) */
+            e_mov(&g->code,RAX,R12);
+        }
+        else if(!strcmp(m,"Env")){
+            /* Env(name_ptr) -> value_ptr or NULL if not found */
+            if(e->nch!=1)die("[Line %d] execute.Env(name)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);    /* rdi = name */
+            /* Call our internal env search subroutine */
+            {size_t s=e_call(&g->code);
+             strncpy(g->fn_patches[g->nfnp].name,"__env_get",63);
+             g->fn_patches[g->nfnp].site=s;g->nfnp++;}
+        }
+        else if(!strcmp(m,"Socket")){
+            /* Socket(domain, type, protocol) -> fd
+             * domain: 2=AF_INET, type: 1=SOCK_STREAM, protocol: 0 */
+            if(e->nch!=3)die("[Line %d] execute.Socket(domain,type,proto)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,41); /* sys_socket */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Bind")){
+            /* Bind(fd, sockaddr_ptr, addrlen) -> 0 or -1 */
+            if(e->nch!=3)die("[Line %d] execute.Bind(fd,addr,len)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,49); /* sys_bind */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Listen")){
+            /* Listen(fd, backlog) */
+            if(e->nch!=2)die("[Line %d] execute.Listen(fd,backlog)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,50); /* sys_listen */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Accept")){
+            /* Accept(fd) -> client_fd */
+            if(e->nch!=1)die("[Line %d] execute.Accept(fd)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);
+            e_xor(&g->code,RSI,RSI);    /* addr=NULL */
+            e_xor(&g->code,RDX,RDX);    /* addrlen=NULL */
+            e_mov_imm(&g->code,RAX,43); /* sys_accept */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Connect")){
+            /* Connect(fd, sockaddr_ptr, addrlen) -> 0 or -1 */
+            if(e->nch!=3)die("[Line %d] execute.Connect(fd,addr,len)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,42); /* sys_connect */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Send")){
+            /* Send(fd, buf, len, flags) -> bytes_sent */
+            if(e->nch!=4)die("[Line %d] execute.Send(fd,buf,len,flags)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[3]);
+            e_mov(&g->code,R10,RAX);
+            e_pop(&g->code,RDX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,44); /* sys_sendto */
+            e_xor(&g->code,R8,R8); e_xor(&g->code,R9,R9);
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Recv")){
+            /* Recv(fd, buf, len, flags) -> bytes_received */
+            if(e->nch!=4)die("[Line %d] execute.Recv(fd,buf,len,flags)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[3]);
+            e_mov(&g->code,R10,RAX);
+            e_pop(&g->code,RDX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,45); /* sys_recvfrom */
+            e_xor(&g->code,R8,R8); e_xor(&g->code,R9,R9);
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Mmap")){
+            /* Mmap(addr,len,prot,flags,fd,off) -> ptr */
+            if(e->nch!=6)die("[Line %d] execute.Mmap(addr,len,prot,flags,fd,off)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[3]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[4]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[5]);
+            e_mov(&g->code,R9,RAX);
+            e_pop(&g->code,R8);
+            e2(&g->code,0x41,0x5A); /* pop r10 = flags */
+            e_pop(&g->code,RDX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,9); /* sys_mmap */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Munmap")){
+            if(e->nch!=2)die("[Line %d] execute.Munmap(ptr,len)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,11); /* sys_munmap */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Mprotect")){
+            /* Mprotect(ptr, len, prot) */
+            if(e->nch!=3)die("[Line %d] execute.Mprotect(ptr,len,prot)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,10); /* sys_mprotect */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Pipe")){
+            /* Pipe(fds_ptr) -> 0 on success. fds[0]=read, fds[1]=write */
+            if(e->nch!=1)die("[Line %d] execute.Pipe(fds_ptr)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);
+            e_mov_imm(&g->code,RAX,22); /* sys_pipe */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Dup2")){
+            /* Dup2(oldfd, newfd) -> newfd */
+            if(e->nch!=2)die("[Line %d] execute.Dup2(oldfd,newfd)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,33); /* sys_dup2 */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Ioctl")){
+            /* Ioctl(fd, request, arg) -> result */
+            if(e->nch!=3)die("[Line %d] execute.Ioctl(fd,req,arg)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);
+            e_pop(&g->code,RSI);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,16); /* sys_ioctl */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"SetByte")){
+            /* SetByte(ptr, offset, byte_val) — write 1 byte */
+            if(e->nch!=3)die("[Line %d] execute.SetByte(ptr,off,val)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[2]);
+            e_mov(&g->code,RDX,RAX);    /* rdx = byte val */
+            e_pop(&g->code,RCX);        /* rcx = offset */
+            e_pop(&g->code,RDI);        /* rdi = base ptr */
+            /* add rdi,rcx */
+            e_add(&g->code,RDI,RCX);
+            /* mov byte[rdi],dl */
+            e2(&g->code,0x88,0x17);
+        }
+        else if(!strcmp(m,"GetByte")){
+            /* GetByte(ptr, offset) -> byte value */
+            if(e->nch!=2)die("[Line %d] execute.GetByte(ptr,off)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_pop(&g->code,RCX);        /* rcx = base */
+            e_add(&g->code,RCX,RAX);    /* rcx = base+off */
+            /* movzx rax,byte[rcx] */
+            e4(&g->code,0x48,0x0F,0xB6,0x01);
+        }
+        else if(!strcmp(m,"Brk")){
+            /* Brk(addr) -> new break addr. Pass 0 to get current. */
+            if(e->nch!=1)die("[Line %d] execute.Brk(addr)",e->line);
+            cg_expr(g,e->ch[0]);
+            e_mov(&g->code,RDI,RAX);
+            e_mov_imm(&g->code,RAX,12); /* sys_brk */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"Time")){
+            /* Time() -> unix timestamp in seconds */
+            if(e->nch!=0)die("[Line %d] execute.Time() takes no args",e->line);
+            e_xor(&g->code,RDI,RDI);    /* tloc=NULL */
+            e_mov_imm(&g->code,RAX,201); /* sys_time */
+            e_syscall(&g->code);
+        }
+        else if(!strcmp(m,"ClockGet")){
+            /* ClockGet(clock_id, timespec_ptr)
+             * clock_id: 0=CLOCK_REALTIME, 1=CLOCK_MONOTONIC */
+            if(e->nch!=2)die("[Line %d] execute.ClockGet(id,timespec_ptr)",e->line);
+            cg_expr(g,e->ch[0]); e_push(&g->code,RAX);
+            cg_expr(g,e->ch[1]);
+            e_mov(&g->code,RSI,RAX);
+            e_pop(&g->code,RDI);
+            e_mov_imm(&g->code,RAX,228); /* sys_clock_gettime */
+            e_syscall(&g->code);
+        }
         else{
-            die("[Line %d] Unknown execute.%s(). Available: WriteIn,Write,WriteInt,WriteChar,ReadIn,ReadInt,StrLen,StrEq,StrCat,StrCopy,Alloc,Free,Syscall,Exit",e->line,m);
+            die("[Line %d] Unknown execute.%s()",e->line,m);
         }
         break;
     } /* end ND_EXEC_CALL */
@@ -1566,9 +1990,13 @@ static void cg_assign_lhs(CG*g,Node*lhs,int val_reg){
         e_store_ptr(&g->code,RDX,RAX);
     } else if(lhs->kind==ND_DEREF){
         e_push(&g->code,val_reg);
-        cg_expr(g,lhs->ch[0]);
-        e_pop(&g->code,RCX);
-        e_store_ptr(&g->code,RAX,RCX);
+        cg_expr(g,lhs->ch[0]);  /* rax = ptr */
+        e_pop(&g->code,RCX);    /* rcx = value */
+        /* mov byte[rax], cl — store 1 byte */
+        e3(&g->code,0x88,0x08,0x00); /* mov byte[rax],cl — but ModRM is wrong */
+        /* Correct: 88 /r with ModRM(0,rcx=1,rax=0) = 0x08 */
+        g->code.len -= 3;
+        e2(&g->code,0x88,0x08); /* mov byte[rax],cl */
     } else if(lhs->kind==ND_FIELD){
         Node*base=lhs->ch[0];
         Local*l=cg_get(g,base->sval,lhs->line);
@@ -1750,7 +2178,15 @@ static uint8_t *cg_compile(CG*g,Node*prog,size_t*olen){
         sd->total_size=off;
     }
 
-    /* _start: call main, then exit(rax) */
+    /* _start: save argc->r12, argv->r13, call main, exit */
+    /* pop rdi = argc (Linux puts argc at [rsp] at entry) */
+    e_pop(&g->code,RDI);
+    /* mov r12,rdi (save argc) */
+    e3(&g->code,0x49,0x89,0xFC);
+    /* mov r13,rsp (argv = current rsp, points to argv[0]) */
+    e3(&g->code,0x49,0x89,0xE5);
+    /* align rsp to 16 */
+    e4(&g->code,0x48,0x83,0xE4,0xF0);
     size_t start_site=e_call(&g->code);
     strncpy(g->fn_patches[g->nfnp].name,"main",63);
     g->fn_patches[g->nfnp].site=start_site;
@@ -1774,6 +2210,91 @@ static uint8_t *cg_compile(CG*g,Node*prog,size_t*olen){
     g->strlen_off=buf_pos(&g->code); emit_strlen(&g->code);
     g->memcpy_off=buf_pos(&g->code); emit_memcpy(&g->code);
     g->memset_off=buf_pos(&g->code); emit_memset(&g->code);
+    /* __env_get(rdi=name) -> rax=value_ptr or 0
+     * envp is at r13 + (argc+1)*8.
+     * Scans envp for "name=..." and returns ptr to value after '='. */
+    {
+        size_t env_off=buf_pos(&g->code);
+        /* Register as a named function so it can be called */
+        g->fns[g->nfns].off=env_off;
+        strncpy(g->fns[g->nfns].name,"__env_get",63);
+        g->nfns++;
+        /* prologue */
+        e_push(&g->code,RBP); e_mov(&g->code,RBP,RSP);
+        e_push(&g->code,RBX); /* save rbx (name) */
+        e2(&g->code,0x41,0x54); /* push r12 -- actually save r14,r15 */
+        e2(&g->code,0x41,0x55); /* push r13 -- no, just use non-volatile regs */
+        /* Simpler: use rdi=name, iterate envp inline */
+        /* envp = r13 + (r12+1)*8 */
+        /* rax = r12+1 */
+        e_mov(&g->code,RAX,R12);
+        e3(&g->code,0x48,0xFF,0xC0); /* inc rax */
+        /* imul rax,8 */
+        e4(&g->code,0x48,0x6B,0xC0,0x08);
+        /* add rax,r13 -> rax = envp base */
+        e3(&g->code,0x4C,0x01,0xE8);
+        /* rdi=name (arg), rax=envp ptr */
+        /* Save name in rbx */
+        e_mov(&g->code,RBX,RDI);
+        /* outer loop: rax points to current env string ptr */
+        size_t env_loop=buf_pos(&g->code);
+        /* load cur = [rax] */
+        e3(&g->code,0x48,0x8B,0x10); /* mov rdx,[rax] */
+        /* if rdx==0: not found, return 0 */
+        e3(&g->code,0x48,0x85,0xD2);
+        size_t jz_notfound=e_je(&g->code);
+        /* compare cur string with name byte by byte until '=' or mismatch */
+        e_push(&g->code,RAX); /* save envp position */
+        e_mov(&g->code,RSI,RBX); /* rsi=name */
+        /* rcx=0 index */
+        e_xor(&g->code,RCX,RCX);
+        size_t cmp_loop=buf_pos(&g->code);
+        /* load name[rcx] into rdi8 */
+        /* movzx rdi,byte[rsi+rcx] */
+        e4(&g->code,0x0F,0xB6,0x3C,0x0E);
+        /* load env[rcx] into r8b */
+        /* movzx r8,byte[rdx+rcx] */
+        e5(&g->code,0x4C,0x0F,0xB6,0x04,0x0A);
+        /* if name[rcx]==0 && env[rcx]=='=': found! */
+        e3(&g->code,0x48,0x85,0xFF); /* test rdi,rdi */
+        size_t je_nameend=e_je(&g->code);
+        /* if env[rcx]!=name[rcx]: mismatch */
+        /* cmp r8,rdi */
+        e3(&g->code,0x4C,0x39,0xC7);
+        size_t jne_mis=e_jne(&g->code);
+        /* inc rcx, loop */
+        e3(&g->code,0x48,0xFF,0xC1);
+        e_jmp_back(&g->code,cmp_loop);
+        /* name_end: check if env[rcx]=='=' */
+        patch(&g->code,je_nameend,buf_pos(&g->code));
+        /* cmp r8b,'=' (0x3D) */
+        e4(&g->code,0x49,0x83,0xF8,0x3D);
+        size_t jne_eq=e_jne(&g->code);
+        /* found: return rdx+rcx+1 (skip past '=') */
+        e_add(&g->code,RDX,RCX);
+        e3(&g->code,0x48,0xFF,0xC2); /* inc rdx */
+        e_mov(&g->code,RAX,RDX);
+        e_pop(&g->code,RCX); /* clean stack (saved envp pos) */
+        e2(&g->code,0x41,0x5D); /* pop r13 -- match pushes */
+        e2(&g->code,0x41,0x5C); /* pop r12 */
+        e_pop(&g->code,RBX);
+        e_mov(&g->code,RSP,RBP); e_pop(&g->code,RBP);
+        e_ret(&g->code);
+        /* mismatch or not '=': advance envp, loop */
+        patch(&g->code,jne_mis,buf_pos(&g->code));
+        patch(&g->code,jne_eq,buf_pos(&g->code));
+        e_pop(&g->code,RAX); /* restore envp pos */
+        e4(&g->code,0x48,0x83,0xC0,0x08); /* add rax,8 */
+        e_jmp_back(&g->code,env_loop);
+        /* not found: return 0 */
+        patch(&g->code,jz_notfound,buf_pos(&g->code));
+        e_xor(&g->code,RAX,RAX);
+        e2(&g->code,0x41,0x5D);
+        e2(&g->code,0x41,0x5C);
+        e_pop(&g->code,RBX);
+        e_mov(&g->code,RSP,RBP); e_pop(&g->code,RBP);
+        e_ret(&g->code);
+    }
 
     /* Patch function calls */
     for(int i=0;i<g->nfnp;i++){

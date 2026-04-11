@@ -1,0 +1,388 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     VEX LANGUAGE — COMPLETE REFERENCE                       ║
+║                          gutterball v6 compiler                             ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  chmod +x install.sh gutterball
+  ./install.sh                        install compiler + all libraries
+
+  gutterball file.egg -o program      compile
+  gutterball file.egg -o program -O0  compile with no optimisation
+  ./program                           run
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  TYPES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i8   i16   i32   i64     signed integers
+  u8   u16   u32   u64     unsigned integers
+  f64                      64-bit float
+  bool                     true / false
+  ptr                      raw pointer
+  void                     no return value
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VARIABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  var x = 42                          variable (inferred type)
+  var x: i32 = 42                     variable with explicit type
+  const MAX = 100                     compile-time constant (folded)
+  var arr: [10]i64                    fixed array of 10 i64s
+  var p = &x                          pointer to x
+  @p = 99                             write 1 byte through pointer
+  var c = @p                          read 1 byte through pointer
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  OPERATORS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Arithmetic      + - * / %
+  Comparison      == != < > <= >=
+  Logic           && || !
+  Bitwise         & | ^ ~ << >>
+  Compound        += -= *= /=
+  Address-of      &x    (get pointer to x)
+  Deref           @p    (read/write 1 byte at pointer)
+  Cast            cast<i32>(x)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  CONTROL FLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  if x > 0 { ... }
+  if x > 0 { ... } else { ... }
+  if x > 0 { ... } else if x == 0 { ... } else { ... }
+
+  while x < 10 { ... }
+
+  for i in 0..10 { ... }             i goes 0,1,2,...,9
+
+  loop { ... }                        infinite loop
+  break                               exit loop
+  continue                            next iteration
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FUNCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  fn name(a: i64, b: i64) -> i64 {
+      return a + b
+  }
+
+  fn greet(name: ptr) -> void {
+      execute.WriteIn(name)
+  }
+
+  Max 6 parameters. Supports recursion.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  STRUCTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  struct Point {
+      x: i64
+      y: i64
+  }
+
+  var p: Point
+  p.x = 10
+  p.y = 20
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  LIBRARIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Import at top of file:
+
+  get-Library/io
+  get-Library/math
+  get-Library/string
+  get-Library/memory
+  get-Library/sort
+
+  Library files are searched in order:
+    1. Same folder as your .egg file
+    2. ~/.vex/libs/
+    3. /usr/local/lib/vex/
+    4. /usr/lib/vex/
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  IO LIBRARY  (get-Library/io)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  io.print(s)                         print string, no newline
+  io.println(s)                       print string + newline
+  io.printInt(n)                      print integer + newline
+  io.printChar(c)                     print single character
+  io.printBool(b)                     print "true" or "false"
+  io.printLine()                      print blank line
+  io.readInt()            -> i64      read integer from stdin
+  io.readLine(buf, max)   -> ptr      read line into buffer
+  io.ask(prompt, buf, max)-> ptr      print prompt then read line
+  io.askInt(prompt)       -> i64      print prompt then read integer
+  io.banner(text)                     print text in a box
+  io.hr()                             print a horizontal rule
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  MATH LIBRARY  (get-Library/math)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  math.abs(n)             -> i64      absolute value
+  math.max(a, b)          -> i64      larger of two values
+  math.min(a, b)          -> i64      smaller of two values
+  math.clamp(v, lo, hi)   -> i64      clamp v between lo and hi
+  math.pow(base, exp)     -> i64      base to the power of exp
+  math.sqrt(n)            -> i64      integer square root
+  math.gcd(a, b)          -> i64      greatest common divisor
+  math.lcm(a, b)          -> i64      least common multiple
+  math.factorial(n)       -> i64      n!
+  math.fibonacci(n)       -> i64      nth fibonacci number
+  math.is_prime(n)        -> i64      1 if prime, 0 if not
+  math.is_even(n)         -> i64      1 if even
+  math.is_odd(n)          -> i64      1 if odd
+  math.sign(n)            -> i64      -1, 0, or 1
+  math.digits(n)          -> i64      number of digits
+  math.sum_digits(n)      -> i64      sum of all digits
+  math.reverse(n)         -> i64      reverse digits of number
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  STRING LIBRARY  (get-Library/string)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  string.new(size)        -> ptr      allocate new string buffer
+  string.free(buf, size)              free string buffer
+  string.len(s)           -> i64      length of string
+  string.eq(a, b)         -> i64      1 if strings are equal
+  string.copy(dst, src)               copy src into dst
+  string.cat(dst, src)                append src onto dst
+  string.empty(s)         -> i64      1 if string is empty
+  string.contains(s, ch)  -> i64      1 if char (as i64) is in string
+  string.index_of(s, ch)  -> i64      index of char, -1 if not found
+  string.count_char(s,ch) -> i64      count occurrences of char
+  string.to_upper(s)                  convert string to uppercase
+  string.to_lower(s)                  convert string to lowercase
+  string.trim_newline(s)              remove trailing newline
+  string.starts_with(s,p) -> i64      1 if s starts with p
+  string.ends_with(s,p)   -> i64      1 if s ends with p
+  string.repeat_char(b,c,n)           fill buffer with char n times
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  MEMORY LIBRARY  (get-Library/memory)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  memory.alloc(size)      -> ptr      allocate heap memory
+  memory.free(ptr, size)              free heap memory
+  memory.alloc_zeroed(n)  -> ptr      allocate and zero memory
+  memory.copy(dst,src,n)              copy n bytes
+  memory.zero(buf, n)                 zero n bytes
+  memory.fill(buf, val, n)            fill n slots with val
+  memory.realloc(p,old,new)-> ptr     resize allocation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  SORT LIBRARY  (get-Library/sort)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  sort.num{3, 1, 4, 1, 5}            sort and print numbers (special syntax)
+  sort.asc(arr, len)                  sort array ascending in place
+  sort.desc(arr, len)                 sort array descending in place
+  sort.min(arr, len)      -> i64      minimum value in array
+  sort.max(arr, len)      -> i64      maximum value in array
+  sort.sum(arr, len)      -> i64      sum of all elements
+  sort.is_sorted(arr,len) -> i64      1 if already sorted ascending
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — BASIC I/O
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.Write(s)                    print string, no newline
+  execute.WriteIn(s)                  print string + newline
+  execute.WriteInt(n)                 print integer + newline
+  execute.WriteChar(c)                print single character
+  execute.ReadIn(buf, max)            read line into buffer
+  execute.ReadInt()       -> i64      read integer from stdin
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — STRINGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.StrLen(s)       -> i64      length of string
+  execute.StrEq(a, b)     -> i64      1 if equal
+  execute.StrCopy(dst, src)           copy string
+  execute.StrCat(dst, src)            append string
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — MEMORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.Alloc(size)     -> ptr      mmap anonymous memory
+  execute.Free(ptr, size)             munmap memory
+  execute.SetByte(ptr,off,val)        write 1 byte at ptr+offset
+  execute.GetByte(ptr,off)-> i64      read 1 byte at ptr+offset
+  execute.Brk(addr)       -> i64      move program break (0 = get current)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — PROCESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.Exit(code)                  exit with code
+  execute.GetPID()        -> i64      get process ID
+  execute.GetUID()        -> i64      get user ID
+  execute.Fork()          -> i64      fork (0=child, pid=parent)
+  execute.Wait()          -> i64      wait for any child to exit
+  execute.Exec(path,argv)             execve (replaces current process)
+  execute.Sleep(seconds)              sleep N seconds
+  execute.SleepMs(ms)                 sleep N milliseconds
+  execute.Args(n)         -> ptr      get argv[n] as string
+  execute.ArgCount()      -> i64      get argc
+  execute.Env(name)       -> ptr      get environment variable (NULL if missing)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — FILE I/O
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.FileOpen(path, flags)-> i64  open file, returns fd
+    flags: 0   = read only
+           1   = write only
+           577 = write + create + truncate
+           2   = read + write
+
+  execute.FileRead(fd,buf,len)-> i64   read bytes, returns count
+  execute.FileWrite(fd,buf,len)-> i64  write bytes, returns count
+  execute.FileClose(fd)                close file descriptor
+  execute.FileSeek(fd,off,w)  -> i64   seek (w: 0=start 1=cur 2=end)
+  execute.FileStat(path,buf)  -> i64   stat file into buf
+  execute.FileDelete(path)    -> i64   delete file
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — NETWORKING (raw sockets)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.Socket(domain,type,proto)-> i64   create socket
+    domain: 2=AF_INET  type: 1=SOCK_STREAM  proto: 0
+
+  execute.Bind(fd, addr_ptr, len)  -> i64   bind to address
+  execute.Listen(fd, backlog)      -> i64   listen for connections
+  execute.Accept(fd)               -> i64   accept connection, returns fd
+  execute.Connect(fd, addr_ptr, len)-> i64  connect to address
+  execute.Send(fd, buf, len, flags)-> i64   send data
+  execute.Recv(fd, buf, len, flags)-> i64   receive data
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXECUTE — LOW LEVEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  execute.Syscall(num, a1, a2, ...)-> i64   raw Linux syscall
+  execute.Mmap(addr,len,prot,flags,fd,off)-> ptr   raw mmap
+  execute.Munmap(ptr, len)                  unmap memory
+  execute.Mprotect(ptr, len, prot)          change memory protection
+  execute.Pipe(fds_ptr)            -> i64   create pipe (writes 2 int32 fds)
+  execute.Dup2(oldfd, newfd)       -> i64   duplicate file descriptor
+  execute.Ioctl(fd, request, arg)  -> i64   raw ioctl
+  execute.Time()                   -> i64   unix timestamp (seconds)
+  execute.ClockGet(id, buf)                 high-res clock into timespec buf
+    id: 0=CLOCK_REALTIME  1=CLOCK_MONOTONIC
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  EXAMPLE PROGRAMS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  --- Hello World ---
+
+  fn main() -> void {
+      execute.WriteIn("Hello World!")
+      execute.Exit(0)
+  }
+
+  --- Using libraries ---
+
+  get-Library/io
+  get-Library/math
+
+  fn main() -> void {
+      io.banner("My Program")
+      var n = io.askInt("Enter a number: ")
+      io.print("sqrt = ")
+      io.printInt(math.sqrt(n))
+      io.print("is prime = ")
+      io.printBool(math.is_prime(n))
+      execute.Exit(0)
+  }
+
+  --- Sort syntax ---
+
+  get-Library/sort
+
+  fn main() -> void {
+      sort.num{5, 2, 8, 1, 9, 3}
+      execute.Exit(0)
+  }
+
+  --- File I/O ---
+
+  fn main() -> void {
+      var fd = execute.FileOpen("/tmp/test.txt", 577)
+      execute.FileWrite(fd, "hello\n", 6)
+      execute.FileClose(fd)
+      execute.Exit(0)
+  }
+
+  --- Fork ---
+
+  fn main() -> void {
+      var pid = execute.Fork()
+      if pid == 0 {
+          execute.WriteIn("child")
+          execute.Exit(0)
+      } else {
+          execute.WriteIn("parent")
+          execute.Wait()
+      }
+      execute.Exit(0)
+  }
+
+  --- Command line args ---
+
+  fn main() -> void {
+      var argc = execute.ArgCount()
+      execute.WriteInt(argc)
+      execute.WriteIn(execute.Args(0))
+      execute.Exit(0)
+  }
+
+  --- Read env var ---
+
+  fn main() -> void {
+      var home = execute.Env("HOME")
+      execute.WriteIn(home)
+      execute.Exit(0)
+  }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  KEYWORDS (cannot be used as variable names)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  fn  var  const  return  if  else  while  for  in  loop
+  break  continue  true  false  null  struct  cast  execute
+  void  i8  i16  i32  i64  u8  u16  u32  u64  f64  bool  str  ptr
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  COMMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  // single line comment
+  /* multi
+     line comment */
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  FILES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Source files use the .egg extension
+  Compiled programs are native x86-64 ELF64 binaries
+  No runtime required — runs directly on Linux
+
