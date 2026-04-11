@@ -5,7 +5,10 @@ A programming language named egg/VEX with a compiler called gutterball (file typ
 it only runs on Linux machines, so to start using it you do this:
 
 1. Download source code
-2. Extract it
+2. Extract it on desktop git, or use the terminal to do:
+
+            git clone https://github.com/raulcode-sys/Egg-programming-language
+     
 3. go to the terminal and do
    
              cd ~/Downloads/Egg-programming-language-main
@@ -30,7 +33,7 @@ it only runs on Linux machines, so to start using it you do this:
 7. Compile:
 
               gutterball hello.egg -o hello
-9. Run:
+8. Run:
 
               ./hello
 
